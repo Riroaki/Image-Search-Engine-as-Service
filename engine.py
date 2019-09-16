@@ -4,24 +4,25 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 from lshash.lshash import LSHash
-from kmeans import clustering, assign
+from sklearn.cluster import MiniBatchKMeans
 
 logger = logging.getLogger('Image search:engine')
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+# Use ORB to extract feature vectors
+orb = cv2.ORB_create()
 
 
 class ImageSearchEngine(object):
-    """A simple image search engine based on SIFT, Kmeans and LSHash."""
+    """A simple image search engine based on ORB, Kmeans and LSHash."""
 
     def __init__(self):
-        self._sift = cv2.xfeatures2d.SIFT_create()
-        self._sift_feats = []
+        self._all_feats = []
         self._img_dict = {}
-        self._key_feats = None
+        self._kmeans = None
         self._lsh = None
 
     def load_images(self, img_list: list) -> int:
-        """Load images, extract features using SIFT for indexing.
+        """Load images, extract features using ORB for indexing.
 
         Args:
             img_list: list of image files' names.
@@ -33,23 +34,25 @@ class ImageSearchEngine(object):
         progress_bar = tqdm(total=len(img_list))
         for img_name in img_list:
             try:
-                img = cv2.imread(img_name)
-                _, features = self._sift.detectAndCompute(img, None)
+                img = cv2.imread(img_name, cv2.IMREAD_GRAYSCALE)
+                _, features = orb.detectAndCompute(img, None)
                 # Record index of features for this image
-                start_index, num_feats = len(self._sift_feats), len(features)
+                start_index, num_feats = len(self._all_feats), len(features)
                 self._img_dict[img_name] = {'start_index': start_index,
                                             'num_feats': num_feats}
                 # Append new featurs
-                self._sift_feats.append([feat for feat in features])
+                self._all_feats.extend([feat for feat in features])
                 count += 1
             except Exception as e:
                 logger.warning(e)
+                logger.warning('Error processing {}'.format(img_name))
             progress_bar.update(1)
         progress_bar.close()
-        logger.info('Successfully loaded {} images.'.format(count))
+        logger.info('Successfully loaded {} images, extracted {} features.'
+                    .format(count, len(self._all_feats)))
         return count
 
-    def build_index(self, k: int, hash_size: int, num_hashtables: int = 1,
+    def build_index(self, k: int, hash_size: int = 10, num_hashtables: int = 1,
                     store_file: str = None, overwrite: bool = False):
         """Build index for each picture.
         First use K-means to find k key features from previously extracted features and the assignment of each feature;
@@ -68,14 +71,16 @@ class ImageSearchEngine(object):
         Returns:
 
         """
-        assert 0 < k < len(self._sift_feats)
+        assert 0 < k < len(self._all_feats)
         assert hash_size > 0 and num_hashtables > 0
 
         # Use kmeans to calculate K key features and assignment of each feature.
         logger.info('Calculating {} key featurs...'.format(k))
-        self._key_feats, idx = clustering(np.array(self._sift_feats), k)
+        # Mini batch kmeans deals with large amount of data better.
+        self._kmeans = MiniBatchKMeans(n_clusters=k)
+        self._kmeans.fit(np.array(self._all_feats))
+        idx = self._kmeans.labels_
         logger.info('Start indexing each image.')
-        progress_bar = tqdm(total=len(idx))
 
         # Calculate histogram of each image
         self._lsh = LSHash(hash_size=hash_size,
@@ -83,12 +88,14 @@ class ImageSearchEngine(object):
                            num_hashtables=num_hashtables,
                            matrices_filename=store_file,
                            overwrite=overwrite)
-        bins = np.arange(k)
         success = 0
+        progress_bar = tqdm(total=len(self._img_dict))
+        bins = np.arange(-0.5, k + 0.5, 1)
         for img_name, img_meta in self._img_dict.items():
             try:
                 start = img_meta['start_index']
                 end = start + img_meta['num_feats']
+                # Perform histogram
                 hist, _ = np.histogram(idx[start:end], bins=bins)
                 img_meta['histogram'] = hist
                 # Store each picture in hash tables
@@ -114,23 +121,24 @@ class ImageSearchEngine(object):
         Returns:
             list of names of match images.
         """
-        assert self._lsh is not None and self._key_feats is not None
+        assert self._lsh is not None and self._kmeans is not None
         res = []
         try:
-            img = cv2.imread(img_name)
-            _, features = self._sift.detectAndCompute(img)
-            idx = assign(features, self._key_feats)
-            hist, _ = np.histogram(idx, bins=np.arange(len(self._key_feats)))
+            img = cv2.imread(img_name, cv2.IMREAD_GRAYSCALE)
+            _, features = orb.detectAndCompute(img, None)
+            idx = self._kmeans.predict(features)
+            bins = np.arange(-0.5, len(self._kmeans.cluster_centers_) + 0.5, 1)
+            hist, _ = np.histogram(idx, bins=bins)
             res = self._lsh.query(hist, num_results=num_results,
                                   distance_func=distance_func)
         except Exception as e:
             logger.warning(e)
         return res
 
-    def dump(self, pkl_file: str = 'cache.pkl'):
-        with open(pkl_file, 'rb') as f:
+    def dump(self, pkl_file: str = 'model.pkl'):
+        with open(pkl_file, 'wb') as f:
             pickle.dump(self, f)
 
     @property
-    def num_images(self):
+    def num_images(self) -> int:
         return len(self._img_dict)

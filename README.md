@@ -1,24 +1,24 @@
 # Image Search Engine as Service
 
-> A simple image search engine based on SIFT, LSHash and K-Means algorithm.
+> A simple image search engine based on ORB, LSHash and K-Means algorithm.
 >
 > Deployment enabled using Flask.
 
 ## Requirements
 
 - Python3
-- opencv-python==3.4.2.16
-- opencv-contrib-python==3.4.2.16
-- lshash3==0.0.8
 - numpy==1.17.0
+- opencv-python==4.1.1.26
+- scikit-learn==0.20.3
+- lshash3==0.0.8
 - flask==1.1.1
 
 ## Process
 
 ### Build index of source images
 
-- Use SIFT to extract feature points and corresponding feature vectors from each image.
-- Apply K-Means algorithm, aggregate feature vectors and find K centeroids (key features).
+- Use ORB to extract feature points and corresponding feature vectors from each image.
+- Apply (mini-batch) K-Means algorithm, aggregate feature vectors and find K centeroids (key features).
 - Use histogram to describe each images' features, that is, calculate the assignments of all feature vectors of each image, and use histogram vectors of assignments to represent the signatures of each image.
 - Finally, put the histogram vector into LSHash tables.
 
@@ -60,7 +60,8 @@ optional arguments:
 $ python service.py --data data --k 100 --hash_size 11 --num_hashtables 3
 ```
 
-## Known problems
+## About algorithms applied in this project
 
-- SIFT is a bit slow, processing about 5-10 iterations per second.
-- Support for large amount of images (maybe over 200,000) is not considered, as we keep the feature vectors of all images in memory all thee time.
+- ORB: a FAST feature detect and extraction algorithm in computer vision. It is said to be 100 times faster than SIFT, 10 times faster than SURF and also reduces count of feature points of result, and therefore well supports real-time calculations. (What's more, it's FREE! Unlike SIFT and SURF, which are protected by patent and could not be used in newest version of OpenCV...)
+- Mini-batch K-Means: better than normal K-Means algorithm when faced with large amount of data.
+- LSHash: maps similar data into signature vectors in close distances.
